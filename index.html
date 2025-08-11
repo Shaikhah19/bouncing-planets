@@ -1,102 +1,363 @@
-<!DOCTYPE html>
+<!doctype html>
+<!--
+Bouncing Planets — single-file HTML + JS
+Interactive canvas where colorful "planets" drift and react to the cursor:
+- Planets orbit and slowly return to their home positions
+- When the cursor gets close they sling-shot away (repulsive force)
+- Responsive and touch-friendly
+- No external assets
+
+How to use: save as `bouncing-planets.html` and open in a modern browser.
+-->
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Paint Splash Interaction</title>
-    <style>
-        body {
-            margin: 0;
-            background: #f0f0f0;
-            overflow: hidden;
-            cursor: none;
-        }
-        canvas {
-            display: block;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bouncing Planets — Interactive Canvas</title>
+  <style>
+    :root{
+      --bg1: #05061a;
+      --bg2: #071233;
+      --accent: #ffd27f;
+      --ui-bg: rgba(255,255,255,0.06);
+      --glass: rgba(255,255,255,0.04);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    html,body{height:100%;margin:0}
+    body{
+      display:flex;align-items:center;justify-content:center;
+      background: radial-gradient(1200px 600px at 10% 10%, rgba(100,80,200,0.08), transparent 10%),
+                  linear-gradient(180deg,var(--bg1),var(--bg2));
+      color:#e6eef8;overflow:hidden;
+    }
+    canvas{display:block;width:100vw;height:100vh}
+
+    .ui {
+      position:fixed;left:18px;top:18px;padding:10px 12px;border-radius:12px;
+      background:var(--ui-bg);backdrop-filter: blur(6px);box-shadow: 0 6px 18px rgba(3,6,20,0.7);
+      border:1px solid rgba(255,255,255,0.04);font-size:13px;color:#dfeaff;
+    }
+    .ui label{display:flex;gap:8px;align-items:center}
+    .ui input[type=range]{width:150px}
+    .credit{position:fixed;right:14px;bottom:12px;font-size:12px;color:rgba(255,255,255,0.6)}
+    .hint{opacity:0.85;font-size:13px;margin-bottom:6px}
+    button{background:var(--glass);border:1px solid rgba(255,255,255,0.05);padding:6px 8px;border-radius:8px;color:var(--accent);cursor:pointer}
+    @media (max-width:600px){.ui{left:10px;top:10px;padding:8px;font-size:12px}}
+  </style>
 </head>
 <body>
-    <canvas id="paintCanvas"></canvas>
-    <script>
-        const canvas = document.getElementById('paintCanvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+  <canvas id="c"></canvas>
 
-        let splashes = [];
+  <div class="ui" id="ui">
+    <div class="hint"><strong>Bouncing Planets</strong> — move your mouse near a planet to sling it away.</div>
+    <label>Count <input id="count" type="range" min="3" max="40" value="12"></label>
+    <label>Speed <input id="speed" type="range" min="0" max="3" step="0.05" value="1"></label>
+    <label>Repel <input id="repel" type="range" min="20" max="300" value="120"></label>
+    <div style="display:flex;gap:8px;margin-top:8px"><button id="reset">Reset</button><button id="toggleTrails">Toggle Trails</button></div>
+  </div>
 
-        function randomColor() {
-            return `hsl(${Math.random() * 360}, 100%, 50%)`;
+  <div class="credit">Tip: touch works too — drag to push planets</div>
+
+  <script>
+    // Globals
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
+
+    // UI elements
+    const ui = {
+      count: document.getElementById('count'),
+      speed: document.getElementById('speed'),
+      repel: document.getElementById('repel'),
+      reset: document.getElementById('reset'),
+      toggleTrails: document.getElementById('toggleTrails')
+    };
+
+    // Interaction state
+    const pointer = { x: -9999, y: -9999, active: false };
+    let planets = [];
+    let trailsOn = true;
+
+    function resize(){
+      W = Math.round(innerWidth);
+      H = Math.round(innerHeight);
+      canvas.width = Math.round(W * DPR);
+      canvas.height = Math.round(H * DPR);
+      canvas.style.width = W + 'px';
+      canvas.style.height = H + 'px';
+      ctx.setTransform(DPR,0,0,DPR,0,0);
+    }
+
+    window.addEventListener('resize', resize);
+
+    // Utility helpers
+    function rand(a,b){return a + Math.random()*(b-a)}
+    function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+
+    // Color palettes for planets
+    const palettes = [
+      ['#6dd3ff','#4a9fff','#0f4c81'],
+      ['#ffd27f','#ff9b6b','#ff5d73'],
+      ['#b5ffb8','#61c88f','#1f7a5a'],
+      ['#e7c7ff','#b08cff','#6a4fff'],
+      ['#ffd8f0','#ffb6e0','#ff77c2']
+    ];
+
+    // Planet class
+    class Planet{
+      constructor(x,y,r){
+        this.home = {x,y};
+        this.x = x + rand(-30,30);
+        this.y = y + rand(-30,30);
+        this.vx = rand(-0.3,0.3);
+        this.vy = rand(-0.3,0.3);
+        this.r = r;
+        this.mass = r * 0.6;
+        this.color = palettes[Math.floor(Math.random()*palettes.length)];
+        this.off = Math.random()*1000;
+        this.texture = createPlanetTexture(this.r, this.color);
+        this.orbitAng = Math.random()*Math.PI*2;
+      }
+
+      update(dt){
+        // gentle orbit sway around home
+        const orbitRadius = Math.min(35, this.r*1.6);
+        this.orbitAng += 0.2 * dt * (0.2 + (this.r/60));
+        const swayX = Math.cos(this.off + this.orbitAng) * orbitRadius * 0.3;
+        const swayY = Math.sin(this.off + this.orbitAng) * orbitRadius * 0.2;
+
+        // spring force to home
+        const k = 0.01 * ui.speed.value; // spring constant
+        let dx = (this.home.x + swayX) - this.x;
+        let dy = (this.home.y + swayY) - this.y;
+        this.vx += dx * k * dt;
+        this.vy += dy * k * dt;
+
+        // pointer repulsion
+        if(pointer.active){
+          const pdx = this.x - pointer.x;
+          const pdy = this.y - pointer.y;
+          const dist = Math.hypot(pdx,pdy);
+          const threshold = Number(ui.repel.value);
+          if(dist < threshold && dist > 0.1){
+            const force = (1 - (dist/threshold)) * (200 / (dist));
+            this.vx += (pdx/dist) * force * dt * (1 + this.r/50);
+            this.vy += (pdy/dist) * force * dt * (1 + this.r/50);
+          }
         }
 
-        function createSplash(x, y) {
-            for (let i = 0; i < 20; i++) {
-                splashes.push({
-                    x: x,
-                    y: y,
-                    radius: Math.random() * 10 + 5,
-                    color: randomColor(),
-                    dx: (Math.random() - 0.5) * 6,
-                    dy: (Math.random() - 0.5) * 6,
-                    alpha: 1
-                });
-            }
+        // slight mutual avoidance (simple)
+        for(let other of planets){
+          if(other === this) continue;
+          const dx2 = this.x - other.x;
+          const dy2 = this.y - other.y;
+          const d2 = Math.hypot(dx2,dy2);
+          const minDist = (this.r + other.r) * 0.9;
+          if(d2 < minDist && d2 > 0.1){
+            const push = (minDist - d2) * 0.02;
+            this.vx += (dx2/d2) * push * dt;
+            this.vy += (dy2/d2) * push * dt;
+          }
         }
 
-        function drawSplashes() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            for (let i = splashes.length - 1; i >= 0; i--) {
-                const s = splashes[i];
-                ctx.beginPath();
-                ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
-                ctx.fillStyle = `rgba(${hexToRgb(s.color)},${s.alpha})`;
-                ctx.fill();
-                s.x += s.dx;
-                s.y += s.dy;
-                s.alpha -= 0.02;
-                if (s.alpha <= 0) {
-                    splashes.splice(i, 1);
-                }
-            }
+        // friction / damping
+        this.vx *= 0.995;
+        this.vy *= 0.995;
+
+        // update position
+        this.x += this.vx * dt * 60;
+        this.y += this.vy * dt * 60;
+
+        // keep on screen bounds
+        if(this.x < -this.r) this.x = W + this.r;
+        if(this.x > W + this.r) this.x = -this.r;
+        if(this.y < -this.r) this.y = H + this.r;
+        if(this.y > H + this.r) this.y = -this.r;
+      }
+
+      draw(ctx){
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        // glow
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.beginPath();
+        ctx.arc(0,0,this.r*1.8,0,Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,0.02)';
+        ctx.fill();
+
+        // planet texture
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(this.texture, -this.r, -this.r, this.r*2, this.r*2);
+
+        // subtle ring
+        ctx.rotate(Math.sin(this.off + performance.now()*0.0003) * 0.3);
+        ctx.beginPath();
+        ctx.ellipse(0,0,this.r*1.45,this.r*0.45,0,0,Math.PI*2);
+        ctx.lineWidth = Math.max(1, this.r*0.08);
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        ctx.stroke();
+
+        // highlight
+        ctx.beginPath();
+        ctx.arc(-this.r*0.35,-this.r*0.35,this.r*0.22,0,Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.globalAlpha = 0.12;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        ctx.restore();
+      }
+    }
+
+    // Create an offscreen canvas texture for each planet (gradient + subtle noise)
+    function createPlanetTexture(radius, colors){
+      const c = document.createElement('canvas');
+      const size = Math.ceil(radius*2);
+      c.width = size; c.height = size;
+      const g = c.getContext('2d');
+
+      // radial gradient
+      const grad = g.createRadialGradient(size*0.3,size*0.3,Math.max(1,radius*0.05), size*0.5,size*0.5,radius);
+      grad.addColorStop(0, colors[0]);
+      grad.addColorStop(0.6, colors[1]);
+      grad.addColorStop(1, colors[2]);
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(size/2,size/2,radius,0,Math.PI*2);
+      g.fill();
+
+      // subtle banding / shading
+      g.globalCompositeOperation = 'overlay';
+      const band = g.createLinearGradient(0,0,size,size);
+      band.addColorStop(0,'rgba(255,255,255,0.04)');
+      band.addColorStop(0.5,'rgba(0,0,0,0.06)');
+      band.addColorStop(1,'rgba(255,255,255,0.02)');
+      g.fillStyle = band;
+      g.fillRect(0,0,size,size);
+
+      // tiny grain
+      const imgData = g.getImageData(0,0,size,size);
+      for(let i=0;i<imgData.data.length;i+=4){
+        const v = (Math.random()-0.5)*8; // grain strength
+        imgData.data[i] = clamp(imgData.data[i] + v, 0, 255);
+        imgData.data[i+1] = clamp(imgData.data[i+1] + v, 0, 255);
+        imgData.data[i+2] = clamp(imgData.data[i+2] + v, 0, 255);
+      }
+      g.putImageData(imgData,0,0);
+
+      // circle mask to smooth edges
+      g.globalCompositeOperation = 'destination-in';
+      g.beginPath();
+      g.arc(size/2,size/2,radius,0,Math.PI*2);
+      g.fillStyle = 'black';
+      g.fill();
+
+      return c;
+    }
+
+    // Initialize planets
+    function init(count = Number(ui.count.value)){
+      planets = [];
+      // lay out home positions in a loose grid
+      const cols = Math.ceil(Math.sqrt(count));
+      const rows = Math.ceil(count/cols);
+      const margin = 80;
+      const cellW = (W - margin*2) / cols;
+      const cellH = (H - margin*2) / rows;
+
+      let i = 0;
+      for(let r=0;r<rows;r++){
+        for(let c=0;c<cols;c++){
+          if(i >= count) break;
+          const x = margin + c*cellW + cellW*0.5 + rand(-cellW*0.12,cellW*0.12);
+          const y = margin + r*cellH + cellH*0.5 + rand(-cellH*0.12,cellH*0.12);
+          const radius = Math.max(10, Math.round(rand(14, (Math.min(cellW,cellH)/2) * 0.7)));
+          planets.push(new Planet(x,y,radius));
+          i++;
         }
+      }
+    }
 
-        function hexToRgb(hsl) {
-            // Extract HSL values
-            let sep = hsl.indexOf(",") > -1 ? "," : " ";
-            hsl = hsl.substr(4).split(")")[0].split(sep);
-            let h = hsl[0], s = hsl[1].substr(0,hsl[1].length - 1) / 100, l = hsl[2].substr(0,hsl[2].length - 1) / 100;
+    // Starfield background
+    const stars = [];
+    function makeStars(n=150){
+      stars.length = 0;
+      for(let i=0;i<n;i++){
+        stars.push({x: Math.random()*W, y: Math.random()*H, r: Math.random()*1.8, a: Math.random()*0.6 + 0.15});
+      }
+    }
 
-            let c = (1 - Math.abs(2 * l - 1)) * s,
-                x = c * (1 - Math.abs((h / 60) % 2 - 1)),
-                m = l - c/2,
-                r = 0, g = 0, b = 0;
+    // Animation loop
+    let last = performance.now();
+    function loop(now){
+      const dt = Math.min(0.06, (now - last) / 1000);
+      last = now;
 
-            if (0 <= h && h < 60) {r = c; g = x; b = 0;}
-            else if (60 <= h && h < 120) {r = x; g = c; b = 0;}
-            else if (120 <= h && h < 180) {r = 0; g = c; b = x;}
-            else if (180 <= h && h < 240) {r = 0; g = x; b = c;}
-            else if (240 <= h && h < 300) {r = x; g = 0; b = c;}
-            else if (300 <= h && h < 360) {r = c; g = 0; b = x;}
+      // background
+      if(trailsOn){
+        ctx.fillStyle = 'rgba(4,6,20,0.24)';
+        ctx.fillRect(0,0,W,H);
+      } else {
+        // clear more fully
+        ctx.fillStyle = 'rgba(5,6,24,1)';
+        ctx.fillRect(0,0,W,H);
+      }
 
-            r = Math.round((r + m) * 255);
-            g = Math.round((g + m) * 255);
-            b = Math.round((b + m) * 255);
+      // stars
+      ctx.save();
+      for(const s of stars){
+        ctx.globalAlpha = s.a;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+        ctx.fillStyle = 'white';
+        ctx.fill();
+      }
+      ctx.restore();
 
-            return `${r},${g},${b}`;
-        }
+      // update & draw planets
+      for(const p of planets){
+        p.update(dt);
+      }
 
-        canvas.addEventListener('mousemove', (e) => {
-            createSplash(e.clientX, e.clientY);
-        });
+      // draw planets sorted by radius (small first -> larger on top)
+      planets.slice().sort((a,b)=>a.r-b.r).forEach(p => p.draw(ctx));
 
-        function animate() {
-            drawSplashes();
-            requestAnimationFrame(animate);
-        }
+      requestAnimationFrame(loop);
+    }
 
-        animate();
-    </script>
+    // pointer handling (mouse + touch)
+    canvas.addEventListener('mousemove', (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = (e.clientX - rect.left);
+      pointer.y = (e.clientY - rect.top);
+      pointer.active = true;
+    });
+    canvas.addEventListener('mouseleave', ()=>{ pointer.active = false; pointer.x = -9999; pointer.y = -9999; });
+    canvas.addEventListener('mousedown', (e)=>{ pointer.active = true; });
+    canvas.addEventListener('mouseup', (e)=>{ /* no-op */ });
+
+    // touch support
+    canvas.addEventListener('touchstart', (e)=>{ e.preventDefault(); pointer.active = true; const t = e.touches[0]; pointer.x = t.clientX; pointer.y = t.clientY; });
+    canvas.addEventListener('touchmove', (e)=>{ e.preventDefault(); const t = e.touches[0]; pointer.x = t.clientX; pointer.y = t.clientY; });
+    canvas.addEventListener('touchend', (e)=>{ pointer.active = false; pointer.x = -9999; pointer.y = -9999; });
+
+    // UI bindings
+    ui.count.addEventListener('input', ()=> init(Number(ui.count.value)));
+    ui.reset.addEventListener('click', ()=> init(Number(ui.count.value)));
+    ui.toggleTrails.addEventListener('click', ()=> { trailsOn = !trailsOn; ui.toggleTrails.textContent = trailsOn ? 'Toggle Trails' : 'Trails Off'; });
+
+    // boot
+    function start(){
+      resize();
+      makeStars(Math.round(Math.max(80, Math.min(400, (W*H)/6000))));
+      init(Number(ui.count.value));
+      last = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    start();
+  </script>
 </body>
 </html>
+
 
